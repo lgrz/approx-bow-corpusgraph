@@ -1,0 +1,29 @@
+#!/bin/bash
+
+set -e
+
+DT5Q_PREFIX=data/predicted_queries_topk_sampling
+for i in $(seq -f "%03g" 0 17); do
+    echo "Processing chunk $i"
+    # 1 sample: 0
+    paste $DT5Q_PREFIX/predicted_queries_topk_sample000.txt${i}-1004000 \
+        > data/dt5q.01qry.chunk${i}
+    # 5 samples: 0 through 4
+    paste $DT5Q_PREFIX/predicted_queries_topk_sample00[0-4].txt${i}-1004000 \
+        > data/dt5q.05qry.chunk${i}
+    # 40 samples: 0 through 39
+    paste -d" " $DT5Q_PREFIX/predicted_queries_topk_sample0[0-3]?.txt${i}-1004000 \
+        > data/dt5q.40qry.chunk${i}
+done
+
+# 1 query
+cat data/dt5q.01qry.chunk??? | awk '{print NR-1 ":" $0}' > data/dt5q.01qry.txt 
+# 5 queries
+cat data/dt5q.05qry.chunk??? | awk '{print NR-1 ":" $0}' > data/dt5q.05qry.txt 
+
+# 40 queries
+cat data/dt5q.40qry.chunk??? > data/dt5q.40qry.txt 
+$ doct5query corpus
+paste -d' ' $HOME/.ir_datasets/msmarco-passage/collection.tsv data/dt5q.40qry.txt > data/dt5q.collection.tsv
+
+rm data/dt5q.*.chunk???

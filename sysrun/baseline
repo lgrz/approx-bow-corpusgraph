@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+
+import sys
+import os
+import pandas as pd
+import pyterrier as pt
+from pyterrier_pisa import PisaIndex
+from pyterrier.measures import NDCG, R, RR
+from pyterrier_dr import TasB, FlexIndex
+
+
+def pd_experiment_display():
+    pd.set_option('display.max_columns', None)
+    pd.set_option('display.max_colwidth', None)
+    pd.set_option('display.max_rows', None)
+    pd.set_option('display.width', 9999)
+
+
+def run_baselines(dataset, suffix, original_index, dtq5_index, dense_index, dense_model):
+    """
+    Non corpus graph baselines.
+      - BM25 original index
+      - BM25 original index, TasB reranking
+      - BM25 dt5q index
+      - BM25 dt5q index, TasB reranking
+      - TasB retriever
+    """
+    systems = {}
+    systems[f'original-bm25-{suffix}'] = original_index.bm25(k1=0.82, b=0.68, num_results=1000) >> pt.apply.cost(lambda row: 0)
+    systems[f'original-bm25-tasb-{suffix}'] = dense_model >> systems[f'original-bm25-{suffix}'] >> dense_index.np_scorer() >> pt.apply.cost(lambda row: 0)
+    systems[f'dt5q-bm25-{suffix}'] = dtq5_index.bm25(k1=0.82, b=0.68, num_results=1000) >> pt.apply.cost(lambda row: 0)
+    systems[f'dt5q-bm25-tasb-{suffix}'] = dense_model >> systems[f'dt5q-bm25-{suffix}'] >> dense_index.np_scorer() >> pt.apply.cost(lambda row: 0)
+    systems[f'tasb-{suffix}'] = dense_model >> dense_index.np_retriever(num_results=1000) >> pt.apply.cost(lambda row: 1)
+    df = pt.Experiment(
+        list(systems.values()),
+        dataset.get_topics(),
+        dataset.get_qrels(),
+        [NDCG@10, NDCG, R(rel=2)@1000],
+        names=systems.keys(),
+        save_dir='./runs',
+    )
+    print(f'==> {suffix}')
+    print(df)
+
+
+def run():
+    pd_experiment_display()
+    index_prefix = f'{os.getcwd()}/index'
+    dense_model = TasB(model_name='sebastian-hofstaetter/distilbert-dot-tas_b-b256-msmarco')
+    original_index = PisaIndex(f'{index_prefix}/msmarco-passage.pisa', text_field='text')
+    dtq5_index = PisaIndex(f'{index_prefix}/msmarco-passage.dt5q.pisa', text_field='text')
+    dense_index = FlexIndex(f'{index_prefix}/msmarco-passage.tasb.flex')
+    args = [original_index, dtq5_index, dense_index, dense_model]
+    run_baselines(pt.get_dataset('irds:msmarco-passage/trec-dl-2019/judged'), 'dl19', *args)
+    run_baselines(pt.get_dataset('irds:msmarco-passage/trec-dl-2020/judged'), 'dl20', *args)
+    # stage0 for re-ranking efficiency
+    pt.io.write_results(pd.concat([
+        pt.io.read_results('./runs/original-bm25-dl19.res.gz'),
+        pt.io.read_results('./runs/original-bm25-dl20.res.gz'),
+    ], ignore_index=True), './runs/original-stage0.res.gz')
+    pt.io.write_results(pd.concat([
+        pt.io.read_results('./runs/dt5q-bm25-dl19.res.gz'),
+        pt.io.read_results('./runs/dt5q-bm25-dl20.res.gz'),
+    ], ignore_index=True), './runs/dt5q-stage0.res.gz')
+
+
+if '__main__' == __name__:
+    run()

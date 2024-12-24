@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+
+import sys
+import numpy as np
+from pathlib import Path
+
+
+if '__main__' == __name__:
+    if len(sys.argv) != 3:
+        print(f'usage: {sys.argv[0]} <runfile> <top-k>', file=sys.stderr)
+        exit(1)
+
+    runfile = Path(sys.argv[1])
+    adj_topk = int(sys.argv[2])
+    num_docs = 8841823
+
+    ii32 = np.iinfo(np.int32)
+    fi16 = np.finfo(np.float16)
+    max_docid = ii32.max
+    last = -1
+    count = 0
+    edgelist = []
+    scorelist = []
+    edges = np.zeros((num_docs, adj_topk), dtype=np.uint32)
+    scores = np.zeros((num_docs, adj_topk), dtype=np.float16)
+    with open(runfile) as f:
+        for i, l in enumerate(f):
+            qid, _, docno, _, score, _ = l.strip().split()
+            node_id = int(qid)
+            if last == -1:
+                last = node_id
+            elif last != node_id:
+                # new query started, process previous query
+                remainder = adj_topk - count
+                if remainder > 0:
+                    edgelist.extend([last] * remainder)
+                    scorelist.extend([0.] * remainder)
+                assert len(edgelist) == adj_topk
+                assert len(scorelist) == adj_topk
+                arr_e = np.array(edgelist, dtype=np.uint32)
+                arr_s = np.array(scorelist, dtype=np.float16)
+                edges[last,:] = arr_e
+                scores[last,:] = arr_s
+                edgelist.clear()
+                scorelist.clear()
+                count = 0
+                last = node_id
+            # process current line
+            if node_id == docno:
+                # skip the query document
+                continue
+            count += 1
+            edge_id = int(docno)
+            score = float(score)
+            edgelist.append(edge_id)
+            scorelist.append(score)
+        # process the last query
+        remainder = adj_topk - count
+        if remainder > 0:
+            edgelist.extend([last] * remainder)
+            scorelist.extend([0.] * remainder)
+        assert len(edgelist) == adj_topk
+        assert len(scorelist) == adj_topk
+        edges[last,:] = arr_e
+        scores[last,:] = arr_s
+
+    outpath = runfile.parent.resolve() / runfile.stem
+    outpath.mkdir(exist_ok=True)
+    with open(outpath / 'docnos.npids', 'wb') as f:
+        dat = "4e504944260000000000000000000000000000000e0000007b2276657273696f6e223a20317d0000000071000000000000005fea860000000000330000007b22666f726d6174223a2022696e7473657175656e6365222c2022707265666978223a2022222c20227374617274223a20307d01000000ffffffffffffffff5fea860000000000450000007b22666f726d6174223a2022696e7473657175656e6365222c2022707265666978223a2022222c20227374617274223a20302c2022636f756e74223a20383834313832337d"
+        f.write(bytes.fromhex(dat))
+    with open(outpath / 'pt_meta.json', 'w') as f:
+        dat = f'{{"type": "corpus_graph", "format": "np_topk", "doc_count": 8841823, "k": {adj_topk}}}'
+        f.write(dat)
+    outf_edges = 'edges.u32.np'
+    outf_weights = 'weights.f16.np'
+    with open(outpath / outf_edges, 'wb') as f:
+        f.write(np.array(edges, dtype=np.uint32).tobytes())
+    with open(outpath / outf_weights, 'wb') as f:
+        f.write(np.array(scores, dtype=np.float16).tobytes())

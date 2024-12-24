@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+
+import sys
+import os
+import time
+import itertools
+import numpy as np
+import pandas as pd
+from pathlib import Path
+import pyterrier as pt
+from pyterrier_pisa import PisaIndex
+from pyterrier_adaptive import CorpusGraph
+import pyterrier_dr
+from pyterrier_dr import TasB, FlexIndex
+from ladr import LadrProactive
+import fire
+from IPython.core.debugger import set_trace
+
+
+def ladr_proactive(stage0_runfile, index_path, graph_path, sysname='ladr-procactive', k0=1000):
+    """LADR Proactive.
+    """
+    stage0 = pt.io.read_results(stage0_runfile)
+    stage0_k0 = (pt.Transformer.identity() % k0).transform(stage0)
+    dense_index = FlexIndex(index_path, verbose=False)
+    graph = CorpusGraph.load(graph_path)
+    ranker = LadrProactive(dense_index, graph, dense_index.np_scorer())
+    graph_name = Path(graph_path).name
+    names = {'system': 'ladr-proactive', 'graph': graph_name, 'k0': k0, 'depth': 'none'}
+    _run(stage0_k0, ranker, f'runs/original-ladr-k{k0}-{graph_name}.csv', names)
+
+
+def tasb(stage0_runfile, index_path, sysname='tasb', k0=1000):
+    """Non-graph dot product baseline.
+    """
+    stage0 = pt.io.read_results(stage0_runfile)
+    stage0_k0 = (pt.Transformer.identity() % k0).transform(stage0)
+    dense_index = FlexIndex(index_path, verbose=False)
+    ranker = dense_index.np_scorer()
+    names = {'system': 'tasb', 'graph': 'none', 'k0': k0, 'depth': 'none'}
+    _run(stage0_k0, ranker, 'runs/tasb.csv', names)
+
+
+def original():
+    """Original index.
+    """
+    R0 = [5, 10, 20, 50, 100, 200, 500, 1000]
+    graphs = [
+        'original-d16',
+        'original-d128',
+        'original-idf10-d16',
+        'original-idf10-d128',
+        'original-idf5-d16',
+        'original-idf5-d128',
+        'original-titleurl-d16',
+        'original-titleurl-d128',
+        'original-limitpairs-d16',
+        'original-limitpairs-d128',
+        'original-d16-rand25',
+        'original-d16-rand75',
+        'original-d128-rand25',
+        'original-d128-rand75',
+    ]
+    for k0, graph in itertools.product(R0, graphs):
+        print(f'LADR R0: {k0}, graph: {graph} ...', file=sys.stderr)
+        ladr_proactive('runs/original-stage0.res.gz',
+                       'index/msmarco-passage.tasb.flex',
+                       f'graph/{graph}',
+                       k0=k0)
+
+def dt5q():
+    """DocT5Query index.
+    """
+    R0 = [5, 10, 20, 50, 100, 200, 500, 1000]
+    graphs = [
+        'doct5query-d16',
+        'doct5query-d128',
+        'doct5query-idf10-d16',
+        'doct5query-idf10-d128',
+        'doct5query-idf5-d16',
+        'doct5query-idf5-d128',
+        'doct5query-titleurl-d16',
+        'doct5query-titleurl-d128',
+        'doct5query-q1-d16',
+        'doct5query-q1-d128',
+        'doct5query-q5-d16',
+        'doct5query-q5-d128',
+        'doct5query-d16-rand25',
+        'doct5query-d16-rand75',
+        'doct5query-d128-rand25',
+        'doct5query-d128-rand75',
+    ]
+    for k0, graph in itertools.product(R0, graphs):
+        print(f'LADR R0: {k0}, graph: {graph} ...', file=sys.stderr)
+        ladr_proactive('runs/dt5q-stage0.res.gz',
+                       'index/msmarco-passage.tasb.flex',
+                       f'graph/{graph}',
+                       k0=k0)
+
+
+def all_systems():
+    """Rerank and measure latency.
+    """
+    # BM25
+    _run_bm25('./index/msmarco-passage.pisa', './runs/original-bm25.csv', 'original-bm25')
+    _run_bm25('./index/msmarco-passage.dt5q.pisa', './runs/doct5query-bm25.csv', 'doct5query-bm25')
+
+    # TasB
+    tasb('./runs/original-stage0.res.gz', './index/msmarco-passage.tasb.flex')
+    tasb('./runs/dt5q-stage0.res.gz', './index/msmarco-passage.tasb.flex')
+
+    # Original
+    original()
+
+    # DocT5Query
+    dt5q()
+
+
+def _run_bm25(index_path, outfile, name, k=1000):
+    sysdict = {'system': name, 'k': k}
+    topics = pd.concat([
+        pt.get_dataset('irds:msmarco-passage/trec-dl-2019/judged').get_topics(),
+        pt.get_dataset('irds:msmarco-passage/trec-dl-2020/judged').get_topics(),
+    ], ignore_index=True) # reset index!
+    results = topics.copy()
+    results.drop(columns=['query'], inplace=True)
+    results = results.assign(**sysdict)
+
+    index = PisaIndex(index_path, text_field='text')
+    bm25 = index.bm25(k1=0.82, b=0.68, num_results=1000)
+
+    for row in topics.itertuples():
+        qid = row.qid
+        query = row.query
+        start = time.perf_counter_ns()
+        rankedlist = bm25([row])
+        end = time.perf_counter_ns()
+        results.at[row.Index, 'scoring_ms'] = (end - start) // 1e6
+        results.at[row.Index, 'scored'] = len(rankedlist)
+    results.to_csv(outfile, index=False)
+
+
+def _run(stage0, ranker, outfile, sysdict):
+    model = TasB(model_name='sebastian-hofstaetter/distilbert-dot-tas_b-b256-msmarco')
+    topics = pd.concat([
+        pt.get_dataset('irds:msmarco-passage/trec-dl-2019/judged').get_topics(),
+        pt.get_dataset('irds:msmarco-passage/trec-dl-2020/judged').get_topics(),
+    ], ignore_index=True) # reset index!
+
+    # timing results
+    results = topics.copy()
+    results.drop(columns=['query'], inplace=True)
+    results = results.assign(**sysdict)
+    results = results.assign(encoding_ms=0)
+    # rankings for each query
+    reranked_results = []
+
+    # per-query
+    for row in topics.itertuples():
+        qid = row.qid
+        query = row.query
+
+        # query encoding
+        start = time.perf_counter_ns()
+        query_vec = model.encode_queries([query])
+        end = time.perf_counter_ns()
+        query_vec = query_vec.flatten()
+        # post encoding
+        results.at[row.Index, 'encoding_ms'] = (end - start) // 1e6
+
+        # document scoring
+        candidates = stage0[stage0['qid'] == qid]
+        candidates = candidates.assign(query_vec=[query_vec] * len(candidates))
+        start = time.perf_counter_ns()
+        rankedlist = ranker(candidates)
+        end = time.perf_counter_ns()
+        # post scoring
+        results.at[row.Index, 'scoring_ms'] = (end - start) // 1e6
+        results.at[row.Index, 'candidates'] = len(candidates)
+        results.at[row.Index, 'scored'] = len(rankedlist)
+        results.at[row.Index, 'scored_graph'] = abs(len(rankedlist) - len(candidates))
+        rankedlist.sort_values(by=['score'], ascending=False, inplace=True)
+        rankedlist = rankedlist.head(1000) # truncate
+        reranked_results.append(rankedlist)
+
+    # save timing results
+    results.to_csv(outfile, index=False)
+    # save runfile
+    out_data = pd.concat(reranked_results)
+    out_runfile = Path(outfile)
+    out_runfile = (out_runfile.parent / out_runfile.stem)
+    out_runfile = f'{out_runfile}.run'
+    run_name = ranker.__class__.__name__
+    pt.io.write_results(out_data, out_runfile, run_name=run_name)
+
+
+if '__main__' == __name__:
+    fire.Fire({
+        'all': all_systems,
+        'original': original,
+        'dt5q': dt5q,
+        'tasb': tasb,
+        'ladr_proactive': ladr_proactive,
+    })

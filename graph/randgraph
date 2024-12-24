@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+
+import sys
+import json
+import numpy as np
+from pathlib import Path
+
+
+if '__main__' == __name__:
+    if len(sys.argv) != 2:
+        print(f'usage: {sys.argv[0]} <graphpath>', file=sys.stderr)
+        exit(1)
+    DOCID_MAX = 8841822
+    rng = np.random.default_rng(42)
+    graphpath = Path(sys.argv[1])
+    with open(graphpath / 'pt_meta.json') as f:
+        dat = json.load(f)
+        adj_topk = dat['k']
+        num_docs = dat['doc_count']
+
+    print(f'==> loading graph...')
+    print(f'==>   {graphpath}')
+    print(f'==>   {dat}')
+    with open(graphpath / 'edges.u32.np', 'rb') as f:
+        edges = np.frombuffer(f.read(), dtype=np.uint32)
+        edges = edges.reshape(num_docs, adj_topk)
+    print(f'==> generating 25% random edges')
+    # random 25%
+    graph_p25 = edges.copy()
+    events_p25 = rng.choice([False, True], size=(num_docs, adj_topk), p=[.75, .25])
+    edges_p25 = rng.choice(DOCID_MAX, np.count_nonzero(events_p25))
+    graph_p25[events_p25] = edges_p25
+    del events_p25
+    del edges_p25
+    outpath = graphpath.parent / f'{graphpath.name}-rand25'
+    outpath.mkdir(exist_ok=True)
+    with open(outpath / 'docnos.npids', 'wb') as f:
+        dat = "4e504944260000000000000000000000000000000e0000007b2276657273696f6e223a20317d0000000071000000000000005fea860000000000330000007b22666f726d6174223a2022696e7473657175656e6365222c2022707265666978223a2022222c20227374617274223a20307d01000000ffffffffffffffff5fea860000000000450000007b22666f726d6174223a2022696e7473657175656e6365222c2022707265666978223a2022222c20227374617274223a20302c2022636f756e74223a20383834313832337d"
+        f.write(bytes.fromhex(dat))
+    with open(outpath / 'pt_meta.json', 'w') as f:
+        dat = f'{{"type": "corpus_graph", "format": "np_topk", "doc_count": 8841823, "k": {adj_topk}}}'
+        f.write(dat)
+    outf_edges = 'edges.u32.np'
+    outf_weights = 'weights.f16.np'
+    with open(outpath / outf_edges, 'wb') as f:
+        f.write(np.array(graph_p25, dtype=np.uint32).tobytes())
+    with open(outpath / outf_weights, 'wb') as f:
+        f.write(np.zeros((num_docs, adj_topk), dtype=np.float16).tobytes())
+
+    print(f'==> generating 75% random edges')
+    # random 75%
+    graph_p75 = edges.copy()
+    events_p75 = rng.choice([False, True], size=(num_docs, adj_topk), p=[.25, .75])
+    edges_p75 = rng.choice(DOCID_MAX, np.count_nonzero(events_p75))
+    graph_p75[events_p75] = edges_p75
+    del events_p75
+    del edges_p75
+    outpath = graphpath.parent / f'{graphpath.name}-rand75'
+    outpath.mkdir(exist_ok=True)
+    with open(outpath / 'docnos.npids', 'wb') as f:
+        dat = "4e504944260000000000000000000000000000000e0000007b2276657273696f6e223a20317d0000000071000000000000005fea860000000000330000007b22666f726d6174223a2022696e7473657175656e6365222c2022707265666978223a2022222c20227374617274223a20307d01000000ffffffffffffffff5fea860000000000450000007b22666f726d6174223a2022696e7473657175656e6365222c2022707265666978223a2022222c20227374617274223a20302c2022636f756e74223a20383834313832337d"
+        f.write(bytes.fromhex(dat))
+    with open(outpath / 'pt_meta.json', 'w') as f:
+        dat = f'{{"type": "corpus_graph", "format": "np_topk", "doc_count": 8841823, "k": {adj_topk}}}'
+        f.write(dat)
+    outf_edges = 'edges.u32.np'
+    outf_weights = 'weights.f16.np'
+    with open(outpath / outf_edges, 'wb') as f:
+        f.write(np.array(graph_p75, dtype=np.uint32).tobytes())
+    with open(outpath / outf_weights, 'wb') as f:
+        f.write(np.zeros((num_docs, adj_topk), dtype=np.float16).tobytes())

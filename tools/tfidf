@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+
+import ir_datasets
+import pyterrier as pt
+from collections import defaultdict
+from tqdm import tqdm
+import pickle
+import fire
+
+pt.terrier.set_version('5.10')
+pt.terrier.set_helper_version('0.0.8')
+
+
+def index():
+    """Build Terrier index. 
+    """
+    ds = pt.get_dataset('irds:msmarco-passage', verbose=False)
+    indexer = pt.IterDictIndexer("./data/msmarco-passage.terrier", meta={'docno': 20, 'text': 4096})
+    indexer.index(ds.get_corpus_iter())
+
+
+def score():
+    """Extract tf-idf scores.
+    """
+    doc_tfidf = defaultdict(list)
+    # walk the lexicon and postings and get tf-idf scores
+    index = pt.IndexFactory.of('./data/msmarco-passage.terrier/data.properties', memory=True)
+    inv = index.getInvertedIndex()
+    meta = index.getMetaIndex()
+    lex = index.getLexicon()
+    wmodel = pt.java.autoclass("org.terrier.matching.models.TF_IDF")()
+    wmodel.setCollectionStatistics(index.getCollectionStatistics())
+    wmodel.setKeyFrequency(1)
+    count = 0
+    halfway = lex.numberOfEntries() // 2
+    for term, lex_entry in tqdm(lex):
+        wmodel.setEntryStatistics(lex_entry);
+        wmodel.prepare()
+        for posting in inv.getPostings(lex_entry):
+            docno = meta.getItem("docno", posting.getId())
+            score = wmodel.score(posting)
+            doc_tfidf[docno].append((term, score))
+        count += 1
+        if count == halfway:
+            with open(f'data/tfidf_dump_{count}.pkl', 'wb') as f:
+                pickle.dump(doc_tfidf, f)
+            doc_tfidf.clear()
+    with open(f'data/tfidf_dump_{count}.pkl', 'wb') as f:
+        pickle.dump(doc_tfidf, f)
+    # merge tfidf scores
+    output = open('data/tfidf_dump.txt', 'w')
+    doc_tfidf = defaultdict(list)
+    with open('data/tfidf_dump_585341.pkl', 'rb') as f:
+        doc_tfidf = pickle.load(f)
+    with open('data/tfidf_dump_1170682.pkl', 'rb') as f:
+        merge_tfidf = pickle.load(f)
+    docnos = set(doc_tfidf.keys()) | set(merge_tfidf.keys())
+    for did in docnos:
+        scores = doc_tfidf[did].copy()
+        scores.extend(merge_tfidf[did])
+        scores = sorted(scores, key=lambda x: x[1], reverse=True)
+        line = ' '.join([f'{term} {score}' for term, score in scores])
+        output.write(f'{did} {line}\n')
+    output.close()
+
+
+def index_empty_docs():
+    """Check empty docs reported during indexing.
+
+       ```
+       $ grep -En -e '^500080\W' -e '^549802\W' -e '^4774775\W' -e '^6114613\W' -e '^7596691\W' collection.tsv
+       500081:500080   05341/301320
+       549803:549802   T h e u s e o f y a n d w I f t h e v o w e l o f t h e I l i n e a n d u l i n e a r e t h e s y l l a b l e s i f t h e r e i s n o o t h e r v o w e l i n t h e s y l l a b l e s e x c e p t f o r I t h e n w r i t e y a n d w i n f r o n t o f t h e s y l l a b l e s .
+       4774776:4774775 89004 89011 89012 89014 89015 89030 89031 89032 89052 89074 89084 89086 89101 89102 89103 89104 89106 89107 89108 89109 89110 89113 89115 89128 89118 89119 89120 89121 89122 89123 89124 89128 89129 89131 89134 89135 89138 89139 89141 89142 89143 89144 89145 89146 89147 89148 89149 89156.
+       6114614:6114613 !Locateeachmajorbodycavityonamodel. !Identifythemajororgansineachmajorbodycavity.Thetorsomodelsareusefulforthis. !Findtheanatomicalfeaturesthatmarktheseparationofeachbodycavity.
+       7596692:7596691 Yessssssssss s s s s s s s s s s s s s s s s s s s s s s.
+       ```
+    """
+    did_index = set()
+    with open('data/tfidf_dump.sort.txt') as f:
+        for l in f:
+            row = l.strip().split()
+            did_index.add(int(row[0]))
+    print(len(did_index))
+    for i in range(8841823):
+        if i not in did_index:
+            print('missing', i)
+
+
+def topten():
+    """Output the top ten terms.
+    """
+    with open('data/tfidf_dump.sort.txt') as f:
+        for l in f:
+            row = l.strip().split()
+            did = row[0]
+            flatpairs = row[1:]
+            terms = flatpairs[::2]
+            if len(terms) > 10:
+                terms = terms[:10]
+            s = ' '.join(terms)
+            print(f'{did}:{s}')
+
+
+if __name__ == '__main__':
+    fire.Fire({
+        'index': index,
+        'score': score,
+        'index_empty_docs': index_empty_docs,
+        'topten': topten,
+    })

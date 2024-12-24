@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+
+import sys
+from urllib.parse import urlparse
+import ir_datasets
+import pyterrier as pt
+import fire
+
+pt.terrier.set_version('5.10')
+pt.terrier.set_helper_version('0.0.8')
+pt.java.init()
+
+
+def map():
+    """Map docid to passageid, and get the first sentence from each document.
+    """
+    # has title, url
+    marcodocs = ir_datasets.load("msmarco-document")
+    store = marcodocs.docs_store()
+    f = open('data/fields_firstsent.tsv', 'w')
+    f.write(f'docid\tfirst_sentence\n')
+    g = open('data/fields_pid_did_map.tsv', 'w')
+    g.write('docid\tmsmarco_passage_id\tmsmarco_document_id\tqna_url\tmarco_doc_url\tmarco_doc_title\n')
+    # has docid, passageid
+    ds = ir_datasets.load("msmarco-qna")
+    for d in ds.docs_iter():
+        if d.msmarco_document_id is not None:
+            marco_doc = store.get(d.msmarco_document_id)
+        first_sentence = ' '.join(marco_doc.body.split('.')[0].splitlines())
+        if not len(first_sentence):
+            first_sentence = None
+        f.write(f'{d.msmarco_document_id}\t{first_sentence}\n')
+        # doc_id='0-0', url='http://www.pitt.edu/~sdb14/atombomb.html', msmarco_passage_id='0', msmarco_document_id='D59219'
+        g.write(f'{d.doc_id}\t{d.msmarco_passage_id}\t{d.msmarco_document_id}\t{d.url}\t{marco_doc.url}\t{marco_doc.title}\n')
+    f.close()
+    g.close()
+
+
+def title_url():
+    """Output title and url (or the first sentence).
+    """
+    # load first sentence feature
+    docid_sent = {}
+    with open('data/fields_firstsent.tsv') as f:
+        for i, l in enumerate(f):
+            if i == 0:
+                continue
+            did, text = l.strip().split('\t')
+            docid_sent[did] = text
+    # load title, url features
+    pid_titleurl = {}
+    # 6 columns: docid, msmarco_passage_id, msmarco_document_id, qna_url, marco_doc_url, marco_doc_title
+    with open('data/fields_pid_did_map.tsv') as f:
+        for i, l in enumerate(f):
+            if i == 0:
+                continue
+            # note: only strip newlines, preserve <tab>
+            row = l.strip('\n').split('\t')
+            if row[1] in pid_titleurl:
+                continue
+            sent = docid_sent[row[2]]
+            pid_titleurl[row[1]] = (row[2], row[5], row[3], sent)
+    tokeniser = pt.TerrierTokeniser._to_obj('english')
+    tokeniser = pt.TerrierTokeniser._to_class(tokeniser)
+    tokeniser = 'org.terrier.indexing.tokenisation.' + tokeniser
+    tokeniser = pt.java.autoclass(tokeniser)()
+    stemmer = pt.TerrierStemmer._to_obj(pt.TerrierStemmer.porter)
+    stopwords = list(pt.java.autoclass('org.terrier.terms.Stopwords')(None).stopWords)
+    stopwords.extend(['http', 'html', 'www'])
+    def _normalize_text(query):
+        toks = tokeniser.getTokens(query)
+        stems = [stemmer.stem(tok) for tok in toks]
+        terms = [t for t in stems if t not in stopwords]
+        return ' '.join(terms)
+    count_sent = 0
+    for did, fields in pid_titleurl.items():
+        # fields: msmarco_document_id, marco_doc_title, qna_url, first_sentence
+        _, title, url, first_sentence = fields
+        query = _normalize_text(f'{title} {url}')
+        if not len(query):
+            count_sent += 1
+            query = first_sentence
+        if not len(query):
+            print('err empty query:', did, query)
+            exit(1)
+        print(f'{did}:{query}')
+    print(f'{count_sent} sentences used', file=sys.stderr)
+
+
+if __name__ == '__main__':
+    fire.Fire({
+        'map': map,
+        'title_url': title_url,
+    })
