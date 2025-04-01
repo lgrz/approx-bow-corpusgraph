@@ -70,7 +70,7 @@ threadpoolctl==3.5.0
 tokenizers==0.21.0
 torch==2.5.1
 tqdm==4.67.1
-transformers==4.47.1
+transformers==4.48.0
 trec-car-tools==2.6
 triton==3.1.0
 typing_extensions==4.12.2

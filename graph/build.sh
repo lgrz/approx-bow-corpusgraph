@@ -73,6 +73,8 @@ run_queries() {
 for topk in 16 128; do
     # exhaustive
     run_queries "original-d$topk" "data/exhaustive.txt" "index/msmarco-passage.pisa/marcopassage" "bm25_k1-0.82_b-0.68_fixed-40" $topk
+    # random 25, 75
+    $ROOTD/graph/randgraph "original-d$topk"
 
     # tfidf top5
     run_queries "original-idf5-d$topk" "data/tfidf_top05.txt" "index/msmarco-passage.pisa/marcopassage" "bm25_k1-0.82_b-0.68_fixed-40" $topk
@@ -88,6 +90,8 @@ done
 for topk in 16 128; do
     # exhaustive
     run_queries "doct5query-d$topk" "data/exhaustive.dt5q.txt" "index/msmarco-passage.dt5q.pisa/marcopassage" "bm25_k1-0.82_b-0.68_fixed-40" $topk
+    # random 25, 75
+    $ROOTD/graph/randgraph "doct5query-d$topk"
 
     # tfidf top5
     run_queries "doct5query-idf5-d$topk" "data/tfidf_top05.txt" "index/msmarco-passage.dt5q.pisa/marcopassage" "bm25_k1-0.82_b-0.68_fixed-40" $topk
